@@ -3,7 +3,12 @@
 
 #include "RpmImageDownloader.h"
 
+#include <complex>
+
+#include "Engine/TextureLODSettings.h"
 #include "Kismet/KismetRenderingLibrary.h"
+#include "ImageUtils.h"
+#include "ImageCoreUtils.h"
 #include "Requests/RequestFactory.h"
 
 namespace
@@ -57,7 +62,41 @@ void URpmImageDownloader::OnImageDownloadCompleted(bool bSuccess, FString ImageU
 	UTexture2D* Texture = nullptr;
 	if (bSuccess)
 	{
-		Texture = UKismetRenderingLibrary::ImportBufferAsTexture2D(this, ImageRequests[ImageUrl]->GetContent());
+		//Texture = UKismetRenderingLibrary::ImportBufferAsTexture2D(this, ImageRequests[ImageUrl]->GetContent());
+		//Texture->LODGroup = TextureGroup::TEXTUREGROUP_UI;
+		FImage Image;
+		if ( ! FImageUtils::DecompressImage(ImageRequests[ImageUrl]->GetContent().GetData(),ImageRequests[ImageUrl]->GetContent().Num(), Image) )
+		{
+			UE_LOG(LogTemp, Warning, TEXT("Error creating texture. Couldn't determine the file format"));
+		}
+
+		ERawImageFormat::Type PixelFormatRawFormat;
+		EPixelFormat PixelFormat = FImageCoreUtils::GetPixelFormatForRawImageFormat(Image.Format,&PixelFormatRawFormat);
+		UE_LOG(LogTemp, Warning, TEXT("Image size: %d, %d"), Image.SizeX, Image.SizeY);
+		UE_LOG(LogTemp, Warning, TEXT("Image raw format: %d, Image format: %d"), PixelFormatRawFormat, PixelFormat);
+		
+		Texture = UTexture2D::CreateTransient(Image.SizeX, Image.SizeY, PixelFormat);
+		
+		if (Texture == nullptr)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("Error in CreateTransient"));
+		}
+		Texture->bNotOfflineProcessed = true;
+		Texture->LODGroup = TextureGroup::TEXTUREGROUP_World;
+		
+		
+		uint8* MipData = static_cast<uint8*>(Texture->GetPlatformData()->Mips[0].BulkData.Lock(LOCK_READ_WRITE));
+		check( MipData != nullptr );
+		int64 MipDataSize = Texture->GetPlatformData()->Mips[0].BulkData.GetBulkDataSize();
+		FImageView MipImage(MipData,Image.SizeX,Image.SizeY,1,PixelFormatRawFormat,Image.GammaSpace);
+
+		// copy into texture and convert if necessary :
+		FImageCore::CopyImage(Image,MipImage);
+				
+		Texture->GetPlatformData()->Mips[0].BulkData.Unlock();
+
+		Texture->UpdateResource();
+
 		ImageMap.Add(ImageUrl, Texture);
 	}
 	for (auto& Callback : RequestCallbacks[ImageUrl])
